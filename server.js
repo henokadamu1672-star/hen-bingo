@@ -1,114 +1,20 @@
-const express = require('express');
-const path = require('path');
-const fs = require('fs');
-const crypto = require('crypto');
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-const ADMIN_USER = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
-const DATABASE_URL = process.env.DATABASE_URL;
-
-if (!ADMIN_PASSWORD) {
-  console.warn('ADMIN_PASSWORD is not set. Set it in your hosting environment before production use.');
-}
-
-app.use(express.json({ limit: '20kb' }));
-app.use(express.static(path.join(__dirname, 'public'), { index: 'index.html' }));
-
-function safeEqual(a, b) {
-  const aa = Buffer.from(String(a));
-  const bb = Buffer.from(String(b));
-  return aa.length === bb.length && crypto.timingSafeEqual(aa, bb);
-}
-
-function adminAuth(req, res, next) {
-  const header = req.headers.authorization || '';
-  if (!header.startsWith('Basic ')) return challenge(res);
-  let decoded = '';
-  try { decoded = Buffer.from(header.slice(6), 'base64').toString('utf8'); } catch { return challenge(res); }
-  const i = decoded.indexOf(':');
-  const user = i >= 0 ? decoded.slice(0, i) : '';
-  const pass = i >= 0 ? decoded.slice(i + 1) : '';
-  if (!ADMIN_PASSWORD || !safeEqual(user, ADMIN_USER) || !safeEqual(pass, ADMIN_PASSWORD)) return challenge(res);
-  next();
-}
-function challenge(res) {
-  res.set('WWW-Authenticate', 'Basic realm="Hen@ Bingo Admin"');
-  return res.status(401).send('Admin login required.');
-}
-
-let pool = null;
-let localFile = path.join(__dirname, 'data', 'messages.json');
-
-async function initDb() {
-  if (DATABASE_URL) {
-    const { Pool } = require('pg');
-    pool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
-    await pool.query(`CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      phone TEXT NOT NULL,
-      message TEXT NOT NULL,
-      read BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )`);
-  } else {
-    fs.mkdirSync(path.dirname(localFile), { recursive: true });
-    if (!fs.existsSync(localFile)) fs.writeFileSync(localFile, '[]');
-  }
-}
-
-async function getMessages() {
-  if (pool) {
-    const r = await pool.query('SELECT id,name,phone,message,read,created_at AS "createdAt" FROM messages ORDER BY created_at DESC');
-    return r.rows;
-  }
-  return JSON.parse(fs.readFileSync(localFile, 'utf8'));
-}
-
-async function addMessage(item) {
-  if (pool) {
-    await pool.query('INSERT INTO messages(id,name,phone,message,read,created_at) VALUES($1,$2,$3,$4,false,$5)', [item.id, item.name, item.phone, item.message, item.createdAt]);
-    return;
-  }
-  const a = await getMessages(); a.unshift(item); fs.writeFileSync(localFile, JSON.stringify(a, null, 2));
-}
-
-app.post('/api/messages', async (req, res) => {
-  const name = String(req.body.name || '').trim();
-  const phone = String(req.body.phone || '').trim();
-  const message = String(req.body.message || '').trim();
-  if (!name || !phone || !message) return res.status(400).json({ error: 'Please fill all fields.' });
-  if (name.length > 100 || phone.length > 40 || message.length > 2000) return res.status(400).json({ error: 'Message is too long.' });
-  const item = { id: crypto.randomUUID(), name, phone, message, read: false, createdAt: new Date().toISOString() };
-  try { await addMessage(item); res.json({ ok: true }); }
-  catch (e) { console.error(e); res.status(500).json({ error: 'Could not save message.' }); }
-});
-
-app.get('/api/messages', adminAuth, async (req, res) => {
-  try { res.json(await getMessages()); } catch (e) { console.error(e); res.status(500).json({ error: 'Could not load messages.' }); }
-});
-
-app.patch('/api/messages/:id', adminAuth, async (req, res) => {
-  try {
-    if (pool) {
-      const r = await pool.query('UPDATE messages SET read=$1 WHERE id=$2 RETURNING id,name,phone,message,read,created_at AS "createdAt"', [!!req.body.read, req.params.id]);
-      return r.rowCount ? res.json(r.rows[0]) : res.sendStatus(404);
-    }
-    const a = await getMessages(); const x = a.find(m => m.id === req.params.id);
-    if (!x) return res.sendStatus(404); x.read = !!req.body.read; fs.writeFileSync(localFile, JSON.stringify(a, null, 2)); res.json(x);
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Could not update message.' }); }
-});
-
-app.delete('/api/messages/:id', adminAuth, async (req, res) => {
-  try {
-    if (pool) { await pool.query('DELETE FROM messages WHERE id=$1', [req.params.id]); return res.sendStatus(204); }
-    const a = await getMessages(); fs.writeFileSync(localFile, JSON.stringify(a.filter(m => m.id !== req.params.id), null, 2)); res.sendStatus(204);
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Could not delete message.' }); }
-});
-
-app.get('/admin', adminAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
-
-initDb().then(() => app.listen(PORT, () => console.log(`Hen@ Bingo running on port ${PORT}`)))
-  .catch(err => { console.error('Database initialization failed:', err); process.exit(1); });
+const express=require('express'),session=require('express-session'),SQLiteStore=require('connect-sqlite3')(session),Database=require('better-sqlite3'),bcrypt=require('bcryptjs'),helmet=require('helmet'),multer=require('multer'),path=require('path'),fs=require('fs');
+const app=express(),PORT=process.env.PORT||3000,DATA=path.join(__dirname,'data'),UPLOADS=path.join(__dirname,'uploads');fs.mkdirSync(DATA,{recursive:true});fs.mkdirSync(UPLOADS,{recursive:true});
+app.use(helmet({contentSecurityPolicy:false}));app.use(express.urlencoded({extended:false}));app.use(express.json({limit:'50kb'}));
+app.use(session({store:new SQLiteStore({db:'sessions.sqlite',dir:DATA}),secret:process.env.SESSION_SECRET||'CHANGE_THIS_SECRET',resave:false,saveUninitialized:false,cookie:{httpOnly:true,sameSite:'lax',secure:process.env.NODE_ENV==='production',maxAge:604800000}}));
+const db=new Database(path.join(DATA,'henlite.sqlite'));db.pragma('journal_mode=WAL');db.exec(`CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'user'); CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,service TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',file_name TEXT,file_path TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);`);
+const adminEmail=(process.env.ADMIN_EMAIL||'admin@example.com').toLowerCase(),adminPass=process.env.ADMIN_PASSWORD||'change-this-password';
+if(!db.prepare('SELECT id FROM users WHERE email=?').get(adminEmail))db.prepare('INSERT INTO users(email,password_hash,role) VALUES(?,?,?)').run(adminEmail,bcrypt.hashSync(adminPass,12),'admin');
+app.use(express.static(path.join(__dirname,'public')));
+const storage=multer.diskStorage({destination:(_r,_f,cb)=>cb(null,UPLOADS),filename:(_r,f,cb)=>cb(null,Date.now()+'-'+Math.random().toString(16).slice(2)+path.extname(f.originalname).slice(0,10))});
+const upload=multer({storage,limits:{fileSize:8*1024*1024},fileFilter:(_r,f,cb)=>{const ok=/^(image\\/(jpeg|png|webp|gif)|application\\/pdf|text\\/plain)$/i.test(f.mimetype);cb(ok?null:new Error('Only images, PDF and text files are allowed.'),ok)}});
+const auth=(req,res,next)=>req.session.user?next():res.status(401).json({error:'Please sign in first.'}),admin=(req,res,next)=>req.session.user?.role==='admin'?next():res.status(403).json({error:'Admin only.'});
+app.get('/api/me',(req,res)=>res.json({user:req.session.user||null}));
+app.post('/api/register',async(req,res)=>{const email=String(req.body.email||'').trim().toLowerCase(),password=String(req.body.password||'');if(!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)||password.length<8)return res.status(400).json({error:'Enter a valid email and password with at least 8 characters.'});try{const r=db.prepare('INSERT INTO users(email,password_hash,role) VALUES(?,?,?)').run(email,await bcrypt.hash(password,12),'user');req.session.user={id:Number(r.lastInsertRowid),email,role:'user'};res.json({ok:true})}catch{res.status(409).json({error:'This email may already be registered.'})}});
+app.post('/api/login',async(req,res)=>{const email=String(req.body.email||'').trim().toLowerCase(),u=db.prepare('SELECT * FROM users WHERE email=?').get(email);if(!u||!await bcrypt.compare(String(req.body.password||''),u.password_hash))return res.status(401).json({error:'Email or password is incorrect.'});req.session.user={id:u.id,email:u.email,role:u.role};res.json({ok:true})});
+app.post('/api/logout',(req,res)=>req.session.destroy(()=>res.json({ok:true})));
+app.post('/api/messages',auth,upload.single('attachment'),(req,res)=>{const service=String(req.body.service||'').slice(0,80),body=String(req.body.body||'').trim().slice(0,4000),f=req.file;if(!service||(!body&&!f))return res.status(400).json({error:'Choose a service and enter a message or attach a file.'});const r=db.prepare('INSERT INTO messages(user_id,service,body,file_name,file_path) VALUES(?,?,?,?,?)').run(req.session.user.id,service,body,f?f.originalname.slice(0,200):null,f?f.filename:null);res.json({ok:true,id:Number(r.lastInsertRowid)})});
+app.get('/api/messages',auth,(req,res)=>{const rows=req.session.user.role==='admin'?db.prepare('SELECT m.*,u.email FROM messages m JOIN users u ON u.id=m.user_id ORDER BY m.id DESC LIMIT 200').all():db.prepare('SELECT id,service,body,file_name,created_at FROM messages WHERE user_id=? ORDER BY id DESC LIMIT 100').all(req.session.user.id);res.json({messages:rows})});
+app.get('/api/admin/files/:id',auth,admin,(req,res)=>{const f=db.prepare('SELECT file_name,file_path FROM messages WHERE id=? AND file_path IS NOT NULL').get(Number(req.params.id));if(!f)return res.sendStatus(404);const p=path.join(UPLOADS,path.basename(f.file_path));if(!fs.existsSync(p))return res.sendStatus(404);res.download(p,f.file_name)});
+app.get('/api/config',(_req,res)=>res.json({phone1:process.env.ADMIN_PHONE_1||'+251972687013',phone2:process.env.ADMIN_PHONE_2||'+251926232836'}));
+app.get('*',(_req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));app.use((e,_q,res,_n)=>res.status(400).json({error:e.message||'Request failed'}));app.listen(PORT,()=>console.log('Hen Lite running on '+PORT));

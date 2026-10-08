@@ -1,26 +1,11 @@
-# Hen@ Bingo
+# Hen Lite starter
 
-A simple customer messaging website with a protected admin inbox.
+## Start locally
+1. Install Node.js 18+.
+2. Copy `.env.example` to `.env`; change `SESSION_SECRET`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD`.
+3. Run `npm install`, then `npm start`.
+4. Open http://localhost:3000.
 
-## Run locally
+Features: email/password registration, admin account created on first run, Bingo/Mobile/Computer service choices, message and image/PDF/text attachment submission, user-private request history, admin-only all-message inbox and attachment downloads, tap-to-call contact numbers.
 
-```bash
-npm install
-ADMIN_PASSWORD="change-this" npm start
-```
-
-Open `http://localhost:3000`.
-
-Admin: `http://localhost:3000/admin`
-
-Default admin username: `admin` (or set `ADMIN_USER`).
-
-## Render / online hosting
-
-Set these environment variables:
-
-- `ADMIN_USER` — admin username
-- `ADMIN_PASSWORD` — strong admin password
-- `DATABASE_URL` — PostgreSQL connection string
-
-`DATABASE_URL` is recommended for production so messages survive restarts/deploys. Without it, the app uses a local JSON file, which is suitable for local testing only.
+Security/deployment note: this is a starter and needs production hardening (rate limiting, CSRF protection, email verification/password reset, upload content validation, backups). On hosts with ephemeral storage, local SQLite and uploads may be lost during redeploys; use a managed database and private persistent storage before real public use. Never deploy with the example password or fallback session secret. Do not upload `.env`, `data/`, or `uploads/` to GitHub.
